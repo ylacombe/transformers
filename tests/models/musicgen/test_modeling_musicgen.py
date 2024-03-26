@@ -80,7 +80,7 @@ def prepare_musicgen_decoder_inputs_dict(
 ):
     if attention_mask is None:
         attention_mask = input_ids.reshape(-1, config.num_codebooks, input_ids.shape[-1])[:, 0, :]
-        attention_mask = attention_mask.ne(config.pad_token_id)
+        attention_mask = attention_mask.ne(config.pad_token_id).to(torch_device)
     if head_mask is None:
         head_mask = torch.ones(config.num_hidden_layers, config.num_attention_heads, device=torch_device)
     if encoder_attention_mask is None and encoder_hidden_states is not None:
@@ -241,7 +241,7 @@ class MusicgenDecoderTest(ModelTesterMixin, GenerationTesterMixin, PipelineTeste
 
         # generate max 3 tokens
         max_length = input_ids.shape[-1] + 3
-        attention_mask = torch.ones((batch_size, sequence_length), dtype=torch.long)
+        attention_mask = torch.ones((batch_size, sequence_length), dtype=torch.long, device=torch_device)
         return config, input_ids, attention_mask, max_length
 
     @staticmethod
@@ -292,7 +292,7 @@ def prepare_musicgen_inputs_dict(
         decoder_attention_mask = decoder_input_ids.reshape(
             -1, config.decoder.num_codebooks, decoder_input_ids.shape[-1]
         )[:, 0, :]
-        decoder_attention_mask = decoder_attention_mask.ne(config.decoder.pad_token_id)
+        decoder_attention_mask = decoder_attention_mask.ne(config.decoder.pad_token_id).to(torch_device)
     if head_mask is None:
         head_mask = torch.ones(
             config.text_encoder.num_hidden_layers, config.text_encoder.num_attention_heads, device=torch_device
@@ -710,7 +710,7 @@ class MusicgenTest(ModelTesterMixin, GenerationTesterMixin, PipelineTesterMixin,
         # take max batch_size
         sequence_length = input_ids.shape[-1]
         input_ids = input_ids[:batch_size, :]
-        attention_mask = torch.ones((batch_size, sequence_length), dtype=torch.long)
+        attention_mask = torch.ones((batch_size, sequence_length), dtype=torch.long, device=torch_device)
 
         # generate max 3 tokens
         max_length = 3
