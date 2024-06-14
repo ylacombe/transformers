@@ -1261,7 +1261,9 @@ class BarkModelIntegrationTests(unittest.TestCase):
 
     @slow
     def test_generate_end_to_end_with_sub_models_args(self):
-        input_ids = self.inputs
+        # reducing the text prompt to avoid OOM
+        input_ids = self.processor("In the light.", voice_preset="en_speaker_6")
+        input_ids = input_ids.to(torch_device)
 
         with torch.no_grad():
             torch.manual_seed(0)
@@ -1292,7 +1294,9 @@ class BarkModelIntegrationTests(unittest.TestCase):
     @require_torch_gpu
     @slow
     def test_generate_end_to_end_with_offload(self):
-        input_ids = self.inputs
+        # reducing the text prompt to avoid OOM
+        input_ids = self.processor("In the light.", voice_preset="en_speaker_6")
+        input_ids = input_ids.to(torch_device)
 
         with torch.no_grad():
             # standard generation
