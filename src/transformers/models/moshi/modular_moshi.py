@@ -16,7 +16,7 @@
 import copy
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -49,37 +49,28 @@ from ...utils import (
 from ..auto.modeling_auto import AutoModel
 from .configuration_moshi import MoshiConfig
 
-from ...configuration_utils import PretrainedConfig
-from ...utils import logging
-from ..auto.configuration_auto import AutoConfig
-
 
 if is_flash_attn_2_available():
     from ...modeling_flash_attention_utils import _flash_attention_forward
-    
-import math
-from typing import Optional
+
 
 import torch
-import torch.nn as nn
 import torch.utils.checkpoint
 
-from ...utils import logging
 from ..gemma.modeling_gemma import (
     GemmaRMSNorm,
 )
-
+from ..llama.modeling_llama import repeat_kv
 from ..mistral.modeling_mistral import (
+    MISTRAL_INPUTS_DOCSTRING,
     MistralAttention,
-    MistralFlashAttention2,
-    MistralSdpaAttention,
     MistralDecoderLayer,
-    MistralModel,
+    MistralFlashAttention2,
     MistralForCausalLM,
-    MISTRAL_INPUTS_DOCSTRING
+    MistralModel,
+    MistralSdpaAttention,
 )
 
-from ..llama.modeling_llama import repeat_kv
 
 logger = logging.get_logger(__name__)
 _CONFIG_FOR_DOC = "MoshiConfig"
@@ -95,7 +86,7 @@ class MoshiRMSNorm(GemmaRMSNorm):
         output = self._norm(x.float())
         output = output * self.weight.float()
         return output.type_as(x)
-    
+
 
 class MoshiFlexibleLinear(nn.Module):
     def __init__(self, input_size, output_size, num_layers):
@@ -129,6 +120,7 @@ class MoshiFlexibleLinear(nn.Module):
         # use einsum to batch the operations (batch_size, num_layers, input_size) -> (batch_size, num_layers, output_size)
         return torch.einsum("bnh,noh->bno", x, self.weight)
 
+
 class MoshiGatingMLP(nn.Module):
     def __init__(self, config, use_flexible_linear=False):
         super().__init__()
@@ -152,7 +144,7 @@ class MoshiGatingMLP(nn.Module):
         hidden_states = self.activation_fn(hidden_states[..., 0, :]) * hidden_states[..., 1, :]
         hidden_states = self.fc2(hidden_states) if layer_idx is None else self.fc2(hidden_states, layer_idx)
         return hidden_states
-    
+
 
 ALL_LAYERNORM_LAYERS.append(MoshiRMSNorm)
 
@@ -167,6 +159,7 @@ class MoshiDecoderFlashAttention2(MistralFlashAttention2):
 
 class MoshiDecoderSdpaAttention(MistralSdpaAttention):
     pass
+
 
 @dataclass
 class MoshiCausalLMOutputWithPast(ModelOutput):
@@ -204,7 +197,8 @@ class MoshiCausalLMOutputWithPast(ModelOutput):
     last_hidden_state: torch.FloatTensor = None
     past_key_values: Optional[Tuple[Tuple[torch.FloatTensor]]] = None
     hidden_states: Optional[Tuple[torch.FloatTensor, ...]] = None
-    
+
+
 MOSHI_DECODER_ATTENTION_CLASSES = {
     "eager": MoshiDecoderAttention,
     "flash_attention_2": MoshiDecoderFlashAttention2,
@@ -217,7 +211,9 @@ class MoshiDecoderLayer(MistralDecoderLayer):
         super().__init__()
         self.hidden_size = config.hidden_size
 
-        self.self_attn = MOSHI_DECODER_ATTENTION_CLASSES[config._attn_implementation](config=config, layer_idx=layer_idx)
+        self.self_attn = MOSHI_DECODER_ATTENTION_CLASSES[config._attn_implementation](
+            config=config, layer_idx=layer_idx
+        )
 
         self.mlp = MoshiGatingMLP(config)
         self.input_layernorm = MoshiRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -258,7 +254,7 @@ class MoshiPreTrainedModel(PreTrainedModel):
             if module.padding_idx is not None:
                 module.weight.data[module.padding_idx].zero_()
 
-    
+
 class MoshiModel(MistralModel, MoshiPreTrainedModel):
     def __init__(self, config: MoshiConfig):
         super().__init__(config)
@@ -271,7 +267,7 @@ class MoshiModel(MistralModel, MoshiPreTrainedModel):
         )
         self.norm = MoshiRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.gradient_checkpointing = False
-    
+
 
 class MoshiForCausalLM(MistralForCausalLM):
     def __init__(self, config):
@@ -282,7 +278,7 @@ class MoshiForCausalLM(MistralForCausalLM):
 
         # Initialize weights and apply final processing
         self.post_init()
-        
+
     @add_start_docstrings_to_model_forward(MISTRAL_INPUTS_DOCSTRING)
     @replace_return_docstrings(output_type=MoshiCausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
     def forward(
@@ -389,6 +385,7 @@ class MoshiForCausalLM(MistralForCausalLM):
             hidden_states=outputs.hidden_states,
             attentions=outputs.attentions,
         )
+
 
 @dataclass
 class MoshiConditionalGenerationGenerateOutput(ModelOutput):
@@ -516,8 +513,6 @@ class MoshiUnconditionalInput(ModelOutput):
     attention_mask: torch.LongTensor = None
 
 
-
-
 class MoshiDepthDecoderAttention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
 
@@ -549,18 +544,14 @@ class MoshiDepthDecoderAttention(nn.Module):
                 f" and `num_heads`: {self.num_heads})."
             )
 
-        self.q_proj = MoshiFlexibleLinear(
-            self.hidden_size, self.num_heads * self.head_dim, config.num_codebooks
-        )
+        self.q_proj = MoshiFlexibleLinear(self.hidden_size, self.num_heads * self.head_dim, config.num_codebooks)
         self.k_proj = MoshiFlexibleLinear(
             self.hidden_size, self.num_key_value_heads * self.head_dim, config.num_codebooks
         )
         self.v_proj = MoshiFlexibleLinear(
             self.hidden_size, self.num_key_value_heads * self.head_dim, config.num_codebooks
         )
-        self.o_proj = MoshiFlexibleLinear(
-            self.num_heads * self.head_dim, self.hidden_size, config.num_codebooks
-        )
+        self.o_proj = MoshiFlexibleLinear(self.num_heads * self.head_dim, self.hidden_size, config.num_codebooks)
 
     def forward(
         self,
@@ -615,7 +606,7 @@ class MoshiDepthDecoderAttention(nn.Module):
             attn_weights = None
 
         return attn_output, attn_weights, past_key_value
-    
+
 
 class MoshiDepthDecoderFlashAttention2(MoshiDepthDecoderAttention):
     """
@@ -664,7 +655,7 @@ class MoshiDepthDecoderFlashAttention2(MoshiDepthDecoderAttention):
         value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
         if past_key_value is not None:
-            cache_kwargs = {"cache_position": cache_position} # Ignore copy
+            cache_kwargs = {"cache_position": cache_position}  # Ignore copy
             key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
 
         # TODO: These transpose are quite inefficient but Flash Attention requires the layout [batch_size, sequence_length, num_heads, head_dim]. We would need to refactor the KV cache
@@ -767,7 +758,6 @@ class MoshiDepthDecoderSdpaAttention(MoshiDepthDecoderAttention):
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
         value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
-
         if past_key_value is not None:
             cache_kwargs = {"cache_position": cache_position}
             key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
@@ -813,13 +803,16 @@ MOSHI_DEPTH_DECODER_ATTENTION_CLASSES = {
     "sdpa": MoshiDepthDecoderSdpaAttention,
 }
 
+
 class MoshiDepthDecoderLayer(nn.Module):
     def __init__(self, config: MoshiConfig, layer_idx: int, use_flexible_linear: bool = False, use_rope=True):
         super().__init__()
         self.hidden_size = config.hidden_size
         self.use_flexible_linear = use_flexible_linear
 
-        self.self_attn = MOSHI_DEPTH_DECODER_ATTENTION_CLASSES[config._attn_implementation](config=config, layer_idx=layer_idx)
+        self.self_attn = MOSHI_DEPTH_DECODER_ATTENTION_CLASSES[config._attn_implementation](
+            config=config, layer_idx=layer_idx
+        )
 
         self.mlp = MoshiGatingMLP(config, use_flexible_linear=True)
         self.input_layernorm = MoshiRMSNorm(self.hidden_size, eps=config.rms_norm_eps)
@@ -904,8 +897,7 @@ class MoshiDepthDecoderLayer(nn.Module):
             outputs += (present_key_value,)
 
         return outputs
-    
-    
+
 
 MOSHI_START_DOCSTRING = r"""
     This model inherits from [`PreTrainedModel`]. Check the superclass documentation for the generic methods the
@@ -991,8 +983,6 @@ MOSHI_INPUTS_DOCSTRING = r"""
 """
 
 
-    
-    
 class MoshiDepthDecoder(MoshiPreTrainedModel, GenerationMixin):
     """
     Transformer depth decoder consisting of *config.depth_num_hidden_layers* layers. Each layer is a [`MoshiDepthDecoderLayer`]
@@ -1025,9 +1015,7 @@ class MoshiDepthDecoder(MoshiPreTrainedModel, GenerationMixin):
         )
 
         self.layers = nn.ModuleList(
-            [
-                MoshiDepthDecoderLayer(config, layer_idx) for layer_idx in range(config.depth_num_hidden_layers)
-            ]
+            [MoshiDepthDecoderLayer(config, layer_idx) for layer_idx in range(config.depth_num_hidden_layers)]
         )
 
         self.lm_heads = MoshiFlexibleLinear(config.depth_hidden_size, config.audio_vocab_size, config.num_codebooks)
@@ -1434,8 +1422,7 @@ class MoshiDepthDecoder(MoshiPreTrainedModel, GenerationMixin):
                 )
 
         return causal_mask
-    
-    
+
 
 @add_start_docstrings(
     "The original Moshi model with an audio encoder, a Moshi depth decoder and a Moshi decoder, "
